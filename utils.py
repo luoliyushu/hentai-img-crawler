@@ -57,9 +57,7 @@ def safe_request(session: requests.Session, url: str, max_retries: int = 30, del
 
         # 未成功且还有重试次数：随机延迟后重试
         if attempt < max_retries:
-            delay = random.uniform(*delay_range)
-            log_info(f"[延迟] 等待 {delay:.2f} 秒后重试…")
-            time.sleep(delay)
+            random_delay(delay_range)
 
     log_error(f"[失败] 多次重试仍失败：{url}")
     return None
@@ -412,3 +410,13 @@ def rename_old_dir_to_new(old_dir: str, new_parent_dir: str, new_folder_name: st
                 log_warning(f"[meta.json] 更新失败：{e} → {meta_path}")
 
     return new_dir
+
+# ----------------------------
+# 9. 随机延迟，模拟人类访问，降低被封风险
+# ----------------------------
+
+def random_delay(delay_range=(2, 10)):
+    """随机延迟，模拟人类访问，降低被封风险"""
+    delay = random.uniform(*delay_range)
+    log_info(f"[延迟] 等待 {delay:.2f} 秒后重试…")
+    time.sleep(delay)

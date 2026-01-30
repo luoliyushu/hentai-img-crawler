@@ -37,7 +37,8 @@ from utils import (
     count_finished_files,
     count_missing_links,
     write_meta_json,
-    safe_request
+    safe_request,
+    random_delay
 )
 from downloader import (
     download_images,
@@ -307,6 +308,7 @@ def crawl():
             log_info(f"[收集-特殊] 共收集到 {len(items_all)} 条，开始统一处理")
             for item in items_all:
                 process_item(session, item, is_special_list=True)
+                random_delay()
 
             return
 
@@ -326,6 +328,7 @@ def crawl():
 
                 for item in items:
                     process_item(session, item, is_special_list=True)
+                    random_delay()
 
                 next_page = get_next_page_number(resp.text)
                 if not next_page:
@@ -350,6 +353,7 @@ def crawl():
         log_info(f"[处理] 开始统一处理 {len(items_all)} 条 items")
         for item in items_all:
             process_item(session, item, is_special_list=False)
+            random_delay()
         return
 
     # CRAWL_MODE == 2：每页解析后立即处理（原有行为）
@@ -370,6 +374,7 @@ def crawl():
 
         for item in items:
             process_item(session, item, is_special_list=False)
+            random_delay()
 
 
 # ----------------------------
