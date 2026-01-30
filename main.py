@@ -57,7 +57,7 @@ def process_item(session: requests.Session, item: dict, is_special_list: bool):
     - 查找已有目录（新格式或旧格式）
       * 若找到新格式目录：复用并按跳过逻辑判断是否继续
       * 若找到旧格式目录且旧目录已完成：将旧目录重命名为新格式（可 dry-run），然后跳过
-      * 若找到旧格式目录但未完成：复用旧目录继续下载
+      * 若找到旧格式目录但未完成：复用旧目录继续下载，下载完成后再重命名为新格式
       * 若未找到任何目录：创建新目录并下载
     - 下载图片/视频
     - 写入 meta.json
@@ -103,8 +103,10 @@ def process_item(session: requests.Session, item: dict, is_special_list: bool):
     # 6. 查找是否已有同名目录（跨关键词复用）
     existing_dir = find_existing_work_dir(folder_name)
     if existing_dir:
+        # 找到新格式目录，直接复用
         save_dir = existing_dir
-        log_info(f"[复用目录] {save_dir}")
+        log_info(f"[复用目录] 新格式目录已存在：{save_dir}")
+        # 若已完成则跳过（下面会判断）
     else:
         # 未找到新格式目录，尝试匹配旧格式目录（date丨title丨total）
         old_dir = match_old_format_dir(folder_name)
@@ -126,12 +128,14 @@ def process_item(session: requests.Session, item: dict, is_special_list: bool):
                     log_info(f"[跳过作品] 旧目录已完成，跳过下载：{save_dir}")
                     return
                 else:
+                    # 如果重命名失败，仍然选择在新目录下继续处理（创建新目录）
                     log_warning(f"[重命名失败] 将在新目录下继续处理：{os.path.join(BASE_DOWNLOAD_DIR, new_folder_name)}")
                     save_dir = os.path.join(BASE_DOWNLOAD_DIR, new_folder_name)
             else:
                 # 旧目录存在但未完成，选择复用旧目录继续下载
                 save_dir = old_dir
                 log_info(f"[复用旧目录继续下载] {save_dir}")
+                # 在下载完成后会尝试把旧目录重命名为新格式（见后续逻辑）
         else:
             # 没有旧目录，按新目录创建
             save_dir = os.path.join(BASE_DOWNLOAD_DIR, folder_name)
@@ -144,6 +148,21 @@ def process_item(session: requests.Session, item: dict, is_special_list: bool):
 
     if finished_total >= expected_total:
         log_info(f"[跳过作品] 已完成 {finished_total}/{expected_total}：{save_dir}")
+        # 如果 save_dir 是旧目录且尚未重命名为新格式（即目录名不包含 hash），尝试重命名
+        # 这里判断：如果 save_dir 的目录名不包含 hash（即不是新格式），则尝试重命名
+        base_name = os.path.basename(save_dir)
+        if "丨" in base_name:
+            parts = base_name.split("丨")
+            # 新格式通常有 4 段（date丨title丨total丨hash）或无日期新格式（hash丨title丨total）
+            if len(parts) == 3:
+                # 旧格式，尝试重命名为新格式
+                new_parent = BASE_DOWNLOAD_DIR
+                new_folder_name = folder_name  # 新格式目录名（含 hash）
+                new_dir = rename_old_dir_to_new(save_dir, new_parent, new_folder_name, dry_run=RENAME_DRY_RUN)
+                if new_dir:
+                    log_info(f"[完成后重命名] 旧目录已完成，已重命名为新目录：{new_dir}")
+                else:
+                    log_warning(f"[完成后重命名] 重命名失败：{save_dir} -> {os.path.join(new_parent, new_folder_name)}")
         return
     else:
         log_info(f"[继续作品] 已完成 {finished_total}/{expected_total}，继续下载：{save_dir}")
@@ -156,7 +175,27 @@ def process_item(session: requests.Session, item: dict, is_special_list: bool):
     if video_info:
         download_video(video_info, save_dir)
 
-    # 10. 写入 meta.json
+    # 10. 下载完成后再次检查是否为旧目录且已完成，如果是则重命名为新目录
+    finished_files_after = count_finished_files(save_dir)
+    missing_links_after = count_missing_links(save_dir)
+    finished_total_after = finished_files_after + missing_links_after
+
+    if finished_total_after >= expected_total:
+        # 如果当前 save_dir 是旧格式目录（3 段），则尝试重命名为新格式
+        base_name = os.path.basename(save_dir)
+        parts = base_name.split("丨")
+        if len(parts) == 3:
+            # 旧格式，执行重命名
+            new_parent = BASE_DOWNLOAD_DIR
+            new_folder_name = folder_name  # 新格式目录名（含 hash）
+            new_dir = rename_old_dir_to_new(save_dir, new_parent, new_folder_name, dry_run=RENAME_DRY_RUN)
+            if new_dir:
+                log_info(f"[下载完成后重命名] 已将旧目录重命名为新目录：{new_dir}")
+                save_dir = new_dir
+            else:
+                log_warning(f"[下载完成后重命名] 重命名失败：{save_dir} -> {os.path.join(new_parent, new_folder_name)}")
+
+    # 11. 写入 meta.json（无论是否重命名，meta.json 写入到最终 save_dir）
     file_type = "video" if video_info else "image"
     list_source = f"{LIST_MODE}"
     write_meta_json(

@@ -96,20 +96,58 @@ def count_missing_links(save_dir: str) -> int:
 
 def count_finished_files(save_dir: str) -> int:
     """
-    统计目录下“已完成文件”的数量：
-    - 任意非空文件视为完成；
-    - 不包括“文件不存在的链接.txt”本身。
+    统计目录下“已完成文件”的数量（改进版）：
+    - 只统计“媒体/资源类”的已下载文件，不统计 meta.json、记录文件、临时文件等。
+    - 排除项包括：
+        * MISSING_LINKS_FILENAME（文件不存在的链接.txt）
+        * meta.json（元数据文件）
+        * 以 .part/.tmp/.partial 等常见临时后缀结尾的文件
+        * 名称以 '.' 开头的隐藏文件（例如 .DS_Store）
+    - 任何非空的普通文件且不在排除列表中都会被计为“已完成文件”。
+    - 这样可以避免 meta.json 被误计入，导致作品被错误跳过。
     """
     if not os.path.isdir(save_dir):
         return 0
 
+    # 明确排除的文件名（不计入已完成）
+    excluded_names = {
+        MISSING_LINKS_FILENAME,  # "文件不存在的链接.txt"
+        "meta.json",             # 元数据文件，不计入媒体数量
+        ".DS_Store",             # macOS 系统文件
+    }
+
+    # 明确排除的后缀（临时文件或非媒体）
+    excluded_suffixes = (
+        ".part",   # 常见下载临时后缀
+        ".tmp",
+        ".partial",
+        ".download",
+    )
+
     count = 0
-    for name in os.listdir(save_dir):
-        if name == MISSING_LINKS_FILENAME:
-            continue
-        path = os.path.join(save_dir, name)
-        if os.path.isfile(path) and os.path.getsize(path) > 0:
-            count += 1
+    try:
+        for name in os.listdir(save_dir):
+            # 跳过排除的明确文件名
+            if name in excluded_names:
+                continue
+
+            # 跳过隐藏文件（以 . 开头）
+            if name.startswith("."):
+                continue
+
+            # 跳过临时后缀
+            lower = name.lower()
+            if any(lower.endswith(suf) for suf in excluded_suffixes):
+                continue
+
+            # 统计普通非空文件
+            path = os.path.join(save_dir, name)
+            if os.path.isfile(path) and os.path.getsize(path) > 0:
+                count += 1
+    except Exception as e:
+        log_warning(f"[count_finished_files] 统计失败：{e} → {save_dir}")
+        return 0
+
     return count
 
 
@@ -140,7 +178,6 @@ def find_existing_work_dir(folder_name: str) -> Optional[str]:
         date_new, title_new, total_new, hash_new = parts
     elif len(parts) == 3:
         # 可能为无日期新格式：hash丨title丨total
-        # 也可能是 date丨title丨total（旧格式）但我们优先按新格式解析
         date_new = ""
         hash_new = parts[0]
         title_new = parts[1]
@@ -334,6 +371,7 @@ def rename_old_dir_to_new(old_dir: str, new_parent_dir: str, new_folder_name: st
     log_info(f"[重命名] 将旧目录移动：{old_dir} -> {new_dir} (dry_run={dry_run})")
 
     if dry_run:
+        # dry_run 模式下仅返回目标路径，不实际移动
         return new_dir
 
     try:
