@@ -1,0 +1,7 @@
+download/
+logs/
+备份/
+__pycache__/
+.DS_Store
+.idea/
+.vscode/
