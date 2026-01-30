@@ -1,6 +1,11 @@
 # config.py
 # ============================
-# 全局配置、日志系统、哈希函数、目录名生成
+# 全局配置、日志系统、哈希函数、目录名生成（含对 date/title 的文件名合法化）
+# 说明：
+# - 优先使用你自己项目中的 mymodule.make_valid_filename（如果存在）。
+# - 如果 mymodule 不可用，使用下面的回退实现：将常见的非法文件名字符替换为视觉上相似的全角或替代字符，
+#   并把连续空白压缩为单个下划线，确保生成的目录名不会被误拆分为多级目录。
+# - 这样可以避免像 "2013/04/15" 这种 date 导致目录被拆成多层的问题。
 # ============================
 
 import os
@@ -9,10 +14,74 @@ from datetime import datetime
 import logging
 
 # ----------------------------
-# 1. 日志系统初始化
+# 1. 尝试导入你自己的 make_valid_filename（优先）
 # ----------------------------
+try:
+    # 期望你在项目中有 mymodule.make_valid_filename，用于把任意字符串变成合法文件名
+    from mymodule import make_valid_filename  # type: ignore
+except Exception:
+    # 回退实现：用视觉相近的字符替换常见非法字符，避免路径分隔和保留可读性
+    def make_valid_filename(s: str) -> str:
+        """
+        回退实现：将常见的非法文件名字符替换为相似字符，保证不会包含路径分隔符或系统保留字符。
+        替换表（示例）：
+            '\\' -> '⧵'
+            '/'  -> '／'
+            ':'  -> '：'
+            '*'  -> '＊'
+            '?'  -> '？'
+            '"'  -> '＂'
+            '<'  -> '＜'
+            '>'  -> '＞'
+            '|'  -> '｜'
+        其他处理：
+        - 将连续空白压缩为单个下划线
+        - 去除首尾空白
+        - 保证返回字符串非空（若输入为空或 None，返回空字符串）
+        """
+        if s is None:
+            return ""
+        s = str(s).strip()
 
-# 日志目录：logs（不存在则创建）
+        # 替换映射：把可能导致路径拆分或非法的字符替换为视觉相近的全角或替代字符
+        replace_map = {
+            "\\": "⧵",
+            "/": "／",
+            ":": "：",
+            "*": "＊",
+            "?": "？",
+            "\"": "＂",
+            "<": "＜",
+            ">": "＞",
+            "|": "｜"
+        }
+
+        # 先逐字符替换
+        out_chars = []
+        for ch in s:
+            if ch in replace_map:
+                out_chars.append(replace_map[ch])
+            else:
+                out_chars.append(ch)
+        s = "".join(out_chars)
+
+        # 将控制字符和不可见字符移除（保守处理）
+        s = "".join(ch for ch in s if ch.isprintable())
+
+        # 把连续空白（空格、制表符等）压缩为单个下划线，避免文件名中出现多空格
+        parts = s.split()
+        s = "_".join(parts)
+
+        # 最后再做一次保底替换：如果结果为空，返回一个下划线占位
+        if not s:
+            return "_"
+
+        return s
+
+
+# ----------------------------
+# 2. 日志系统初始化
+# ----------------------------
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -45,7 +114,7 @@ def log_error(msg: str):
 
 
 # ----------------------------
-# 2. 全局配置
+# 3. 全局配置
 # ----------------------------
 
 # 站点域名（根据目标站点修改）
@@ -96,52 +165,64 @@ HEADERS = {
 MISSING_LINKS_FILENAME = "文件不存在的链接.txt"
 
 # 当检测到旧目录并准备重命名时，是否仅做 dry-run（True 仅打印不实际移动）
-# 生产运行时可设为 False 执行实际重命名
 RENAME_DRY_RUN = False
 
 
 # ----------------------------
-# 3. 哈希函数（slug → 8 位 hash）
+# 4. 哈希函数（slug → 8 位 hash）
 # ----------------------------
-
 def slug_to_hash(slug: str) -> str:
     """
     将 slug 转为 md5 的前 8 位，用于目录名。
     - slug 一般为详情页 URL 的最后一段，例如：
       /image/ai-photo-22-ai-generated-2/ → ai-photo-22-ai-generated-2
     """
-    h = hashlib.md5(slug.encode("utf-8")).hexdigest()
+    h = hashlib.md5(str(slug).encode("utf-8")).hexdigest()
     return h[:8]
 
 
 # ----------------------------
-# 4. 目录名生成（含 title 截断）
+# 5. 目录名生成（含 title 截断 + 文件名合法化）
 # ----------------------------
-
 def make_folder_name(date: str, title: str, total: int, slug: str, is_special: bool):
     """
-    生成作品目录名（哈希方案）：
+    生成作品目录名（哈希方案），并对 date/title 做合法化处理以避免路径注入：
     - 一般情况（有日期）：
-        {date}丨{title_truncated}丨{total}丨{hash}
+        {date_clean}丨{title_truncated_clean}丨{total}丨{hash}
     - 特殊情况（无日期）：
-        {hash}丨{title_truncated}丨{total}
+        {hash}丨{title_truncated_clean}丨{total}
+
+    处理细节：
+    - title_truncated: 先截断到 100 字符，再调用 make_valid_filename 清洗非法字符
+    - date: 先调用 make_valid_filename 清洗（把 '/' 或 '\' 等替换掉），
+            如果 date 本身包含多级路径（例如 "2013/04/15"），清洗后会变成单一字符串（例如 "2013_04_15"）
+    - hash8: slug 的 md5 前 8 位
 
     返回：
-    - folder: 目录名（字符串）
-    - title_truncated: 截断后的标题（前 100 字符）
-    - hash8: slug 的 md5 前 8 位
+    - folder: 最终目录名（单层，不含路径分隔符）
+    - title_truncated_clean: 清洗后的截断标题
+    - hash8: 8 位哈希
     """
+    # 保护性转换，避免 None 导致异常
+    title = "" if title is None else str(title)
+    date = "" if date is None else str(date)
+    slug = "" if slug is None else str(slug)
+
     # 截断标题（目录名用），避免路径过长
     title_truncated = title[:100]
+
+    # 使用 make_valid_filename 清洗 title 和 date（优先使用 mymodule 的实现）
+    title_truncated_clean = make_valid_filename(title_truncated)
+    date_clean = make_valid_filename(date)
 
     # 生成哈希
     hash8 = slug_to_hash(slug)
 
     if is_special:
-        # 无日期情况：用 hash 开头
-        folder = f"{hash8}丨{title_truncated}丨{total}"
+        # 无日期情况：hash 开头
+        folder = f"{hash8}丨{title_truncated_clean}丨{total}"
     else:
-        # 有日期情况：用 date 开头
-        folder = f"{date}丨{title_truncated}丨{total}丨{hash8}"
+        # 有日期情况：使用清洗后的 date_clean（保证单层目录）
+        folder = f"{date_clean}丨{title_truncated_clean}丨{total}丨{hash8}"
 
-    return folder, title_truncated, hash8
+    return folder, title_truncated_clean, hash8
